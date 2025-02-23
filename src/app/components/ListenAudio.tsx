@@ -1,6 +1,10 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
-import { Play, Download } from 'lucide-react';
+import { MicOff, Mic } from 'lucide-react';
+import { api } from '@/lib/api';
+import { AudioPlayer } from './AudioPlayer';
+import { cn } from '@/lib/utils';
+import Loading from '../home/loading';
 
 interface Character {
   name: string;
@@ -10,11 +14,10 @@ interface Character {
 }
 
 interface ListenAudioProps {
-  story?: string;
-  onAudioGenerated?: (url: string) => void;
+  story: string;
 }
 
-const ListenAudio = ({ onAudioGenerated }: ListenAudioProps) => {
+const ListenAudio = ({ story }: ListenAudioProps) => {
   // Generate random blob path - Moved to top
   const generateBlobPath = () => {
     const size = 120;
@@ -41,8 +44,12 @@ const ListenAudio = ({ onAudioGenerated }: ListenAudioProps) => {
     return path.join(' ');
   };
 
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
+  const audioChunks = useRef<Blob[]>([]);
   const [characters, setCharacters] = useState<Character[]>([
     { name: 'Bheem', color: 'fill-[#FFD6CC]', blobPath: generateBlobPath() },
     { name: 'Chutki', color: 'fill-[#E6D5B8]', blobPath: generateBlobPath() },
@@ -57,7 +64,6 @@ const ListenAudio = ({ onAudioGenerated }: ListenAudioProps) => {
     const distance = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
     return distance < minDistance;
   };
-  const [isConversationJoined, setIsConversationJoined] = useState(false);
 
   // Function to generate random positions for characters
   const generatePositions = () => {
@@ -110,9 +116,54 @@ const ListenAudio = ({ onAudioGenerated }: ListenAudioProps) => {
     return () => window.removeEventListener('resize', generatePositions);
   }, []);
 
-  const handleJoinConversation = () => {
-    setIsConversationJoined(!isConversationJoined);
+  const handleJoinConversation = async () => {
+    if (isRecording) {
+      // Stop recording
+      if (mediaRecorder.current?.state === 'recording') {
+        mediaRecorder.current.stop();
+      }
+      setIsRecording(false);
+    } else {
+      try {
+        setIsLoading(true);
+        setError(null);
+
+        // First, make the POST request
+        const uniqueId = await api.generateAudioContent(story);
+        console.log('Got unique ID:', uniqueId);
+
+        // Then, make the GET request with the unique ID
+        const audioData = await api.getAudioContent(uniqueId);
+        console.log('Got audio data:', audioData);
+
+        // If you get base64 audio, convert it to URL
+        if (audioData.audioBase64) {
+          const audioBlob = await fetch(`data:audio/mp3;base64,${audioData.audioBase64}`)
+            .then(r => r.blob());
+          const url = URL.createObjectURL(audioBlob);
+          setAudioUrl(url);
+        }
+
+      } catch (error) {
+        console.error('Error generating audio:', error);
+        setError('Failed to generate audio. Please try again.');
+      } finally {
+        setIsLoading(false);
+      }
+    }
   };
+
+  // Cleanup
+  useEffect(() => {
+    return () => {
+      if (mediaRecorder.current?.state === 'recording') {
+        mediaRecorder.current.stop();
+      }
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    };
+  }, []);
 
   return (
     <div className="w-full h-[90vh] max-w-[740px] mx-auto px-4 mt-12 flex flex-col items-between">
@@ -120,9 +171,10 @@ const ListenAudio = ({ onAudioGenerated }: ListenAudioProps) => {
       {/* Characters Container */}
       <div 
         ref={containerRef}
-        className="relative w-full h-[575px] md:h-[650px] mb-8"
+        className="relative w-full text-center mb-8"
       >
-        {characters.map((char, index) => (
+        <p>Story: {story}</p>
+        {/* {characters.map((char, index) => (
           <div
             key={index}
             className={`absolute transform -translate-x-1/2 -translate-y-1/2 transition-all duration-500 ease-out`}
@@ -143,50 +195,52 @@ const ListenAudio = ({ onAudioGenerated }: ListenAudioProps) => {
               </div>
             </div>
           </div>
-        ))}
+        ))} */}
       </div>
 
-      {/* Audio Player */}
-      <div className="w-[70%] mx-auto bg-input rounded-[32px] overflow-hidden mb-8">
-        <div className="h-[70px] relative rounded-[32px]">
-          <div className="absolute inset-0 flex flex-col">
-            <div className="flex-1" />
-            <div className="w-full h-16 flex items-center px-6">
-              <div className="flex items-center w-full">
-                <button className="group p-2 rounded-lg hover:bg-black/5">
-                  <Play className="w-5 h-5 text-[#1C1B1B]" />
-                </button>
-
-                <div className="flex items-center flex-1 mx-4">
-                  <span className="text-sm font-medium text-[#1C1B1B] w-10">0:00</span>
-                  <div className="flex-1 h-1 bg-[#1C1B1B]/10 rounded-full mx-4">
-                    <div className="w-0 h-full bg-primary-orange rounded-full" />
-                  </div>
-                  <span className="text-sm font-medium text-[#1C1B1B] w-10">2:33</span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button className="p-2 rounded-lg hover:bg-black/5">
-                    <Download className="w-5 h-5 text-[#1C1B1B]" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+      {/* Audio Player - Centered and with proper styling */}
+      {audioUrl ? (
+        <div className="w-full max-w-[80%] mx-auto mb-8 bg-input rounded-[32px] p-6">
+          <AudioPlayer 
+            audioUrl={audioUrl} 
+            className="w-full"
+          />
         </div>
-      </div>
+      ) : (
+        <div className="w-full max-w-[80%] mx-auto mb-8 bg-input rounded-[32px] p-6">
+          <p>Generating audio...</p>
+        </div>
+      )}
 
-      {/* Join Conversation Button - Centered at bottom */}
+      {/* Join Conversation Button */}
       <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[740px] px-4 mb-6 md:mb-8">
+        {error && (
+          <div className="text-center mb-4">
+            <p className="text-red-500 text-sm">{error}</p>
+          </div>
+        )}
+        
         <button
           onClick={handleJoinConversation}
-          className={`
-            w-full outline outline-2 outline-border outline-offset-4 rounded-[32px]
-            py-4 font-quicksand font-bold text-white transition-colors
-            ${isConversationJoined ? 'bg-[#323232]' : 'bg-primary-orange hover:bg-primary-orange/90'}
-          `}
+          disabled={isLoading}
+          className={cn(
+            "w-full outline outline-2 outline-border outline-offset-4 rounded-[32px]",
+            "py-4 font-quicksand font-bold text-white transition-all duration-300",
+            "flex items-center justify-center gap-2",
+            isRecording 
+              ? "bg-[#323232]" 
+              : "bg-primary-orange hover:bg-primary-orange/90",
+            isLoading && "opacity-50 cursor-not-allowed"
+          )}
         >
-          {isConversationJoined ? 'Stop Talking' : 'Press to join conversation'}
+          {isLoading ? (
+            <Loading />
+          ) : (
+            <>
+              {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+              {isRecording ? 'Stop Talking' : 'Press to join conversation'}
+            </>
+          )}
         </button>
       </div>
     </div>
